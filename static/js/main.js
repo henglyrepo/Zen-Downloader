@@ -183,7 +183,29 @@ function startProgressTracking(taskId) {
             document.getElementById('progressBar').style.width = '0%';
             document.getElementById('progressPercent').textContent = '0%';
             document.getElementById('progressSpeed').textContent = '';
-            window.location.href = `/download/${currentTaskId}`;
+            
+            // Download file without redirect
+            const filename = progress.filename || 'download.mp4';
+            fetch(`/download/${currentTaskId}`)
+                .then(response => {
+                    if (!response.ok) throw new Error('Download failed');
+                    return response.blob();
+                })
+                .then(blob => {
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    resetApp();
+                })
+                .catch(err => {
+                    console.error('Download error:', err);
+                    resetApp();
+                });
         } else if (progress.status === 'error') {
             eventSource.close();
             document.getElementById('inlineProgress').classList.add('hidden');
