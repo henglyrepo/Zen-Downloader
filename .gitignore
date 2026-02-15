@@ -47,8 +47,11 @@ temp/
 .cache/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 
 # Project specific
 AGENTS.md
 skill.md
 bin/
+__pycache__/
+downloads/
