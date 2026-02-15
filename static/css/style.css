@@ -1,0 +1,16 @@
+/* Zen Downloader - Custom Styles */
+/* Additional custom styles if needed beyond Tailwind */
+
+@media (max-width: 768px) {
+    .container {
+        padding: 1rem;
+    }
+    
+    #videoThumbnail {
+        width: 100%;
+    }
+}
+
+.format-option.selected .text-gray-400 {
+    color: rgba(255, 255, 255, 0.7);
+}
