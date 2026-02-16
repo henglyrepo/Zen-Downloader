@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  A modern, feature-rich YouTube video downloader with a beautiful web interface. Download videos in up to 4K quality, extract audio as MP3, or grab entire playlists with just one click.
+  A modern, feature-rich multi-platform video downloader with a beautiful web interface. Download videos in up to 4K quality, extract audio as MP3, or grab entire playlists with just one click.
 </p>
 
 <p align="center">
@@ -46,14 +46,35 @@
 
 ## Features
 
-- ✅ **Video Download** - Download YouTube videos in up to 4K quality
-- ✅ **Channel/Playlist Support** - Download entire YouTube channels or playlists
+- ✅ **Video Download** - Download videos from 1700+ sites in up to 4K quality
+- ✅ **Multi-Platform Support** - YouTube, TikTok, Facebook, Instagram, Twitter, and more
 - ✅ **Audio Extraction** - Extract audio as high-quality MP3
 - ✅ **Quality Selection** - Choose from 144p to 4K resolution
 - ✅ **Real-time Progress** - Live download progress with speed indicator
 - ✅ **Modern UI** - Sleek, responsive dark theme interface
 - ✅ **Auto Tool Check** - Automatically detects if FFmpeg and yt-dlp are installed
 - ✅ **One-Click Run** - Just double-click `run.bat` to start
+
+---
+
+## Supported Platforms
+
+Zen Downloader supports **1700+ websites** including:
+
+| Platform | Website |
+|----------|---------|
+| 🎬 YouTube | youtube.com, youtu.be |
+| 🎵 TikTok | tiktok.com |
+| 📘 Facebook | facebook.com, fb.watch |
+| 📸 Instagram | instagram.com |
+| 🐦 Twitter/X | twitter.com, x.com |
+| 👽 Reddit | reddit.com |
+| 🎥 Vimeo | vimeo.com |
+| 📺 Dailymotion | dailymotion.com |
+| 🎮 Twitch | twitch.tv |
+| 📌 Pinterest | pinterest.com |
+
+Plus 1700+ more! [View full list](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
 
 ---
 
@@ -96,7 +117,7 @@ Open [http://localhost:5000](http://localhost:5000) in your browser.
 ## Usage Guide
 
 1. **Open the app** - Browser opens to http://localhost:5000
-2. **Paste URL** - Paste any YouTube video or playlist URL
+2. **Paste URL** - Paste any supported video or playlist URL
 3. **Select Quality** - Choose your preferred resolution (144p to 4K)
 4. **Download** - Click "Download Now" - file downloads automatically!
 
