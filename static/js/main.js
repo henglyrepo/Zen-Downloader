@@ -361,9 +361,13 @@ async function loadQueue() {
         const queueCount = document.getElementById('queueCount');
         const queueStats = document.getElementById('queueStats');
         const startQueueBtn = document.getElementById('startQueueBtn');
+        const stopQueueBtn = document.getElementById('stopQueueBtn');
         const clearQueueBtn = document.getElementById('clearQueueBtn');
+        const clearAllQueueBtn = document.getElementById('clearAllQueueBtn');
         const queueEmpty = document.getElementById('queueEmpty');
         const queueList = document.getElementById('queueList');
+        const queueProgressBar = document.getElementById('queueProgressBar');
+        const queueProgressText = document.getElementById('queueProgressText');
         
         if (data.total > 0) {
             queueCount.textContent = data.total;
@@ -373,10 +377,27 @@ async function loadQueue() {
             if (data.pending > 0) stats.push(`${data.pending} pending`);
             if (data.downloading > 0) stats.push(`${data.downloading} downloading`);
             if (data.completed > 0) stats.push(`${data.completed} done`);
+            if (data.failed > 0) stats.push(`${data.failed} failed`);
             queueStats.textContent = `(${stats.join(', ')})`;
             
             startQueueBtn.classList.remove('hidden');
             clearQueueBtn.classList.remove('hidden');
+            clearAllQueueBtn.classList.remove('hidden');
+            
+            // Show queue progress bar
+            if (data.queue_progress) {
+                queueProgressText.textContent = data.queue_progress;
+                queueProgressBar.classList.remove('hidden');
+                const progressPercent = document.getElementById('queueProgressPercent');
+                progressPercent.style.width = data.queue_percent + '%';
+            }
+            
+            // Show stop button if something is downloading or processing
+            if (data.downloading > 0 || data.pending > 0) {
+                stopQueueBtn.classList.remove('hidden');
+            } else {
+                stopQueueBtn.classList.add('hidden');
+            }
             
             queueEmpty.classList.add('hidden');
             queueList.classList.remove('hidden');
@@ -392,7 +413,10 @@ async function loadQueue() {
             queueCount.classList.add('hidden');
             queueStats.textContent = '';
             startQueueBtn.classList.add('hidden');
+            stopQueueBtn.classList.add('hidden');
             clearQueueBtn.classList.add('hidden');
+            clearAllQueueBtn.classList.add('hidden');
+            queueProgressBar.classList.add('hidden');
             
             queueEmpty.classList.remove('hidden');
             queueList.classList.add('hidden');
@@ -418,9 +442,12 @@ function renderQueueItems(queue) {
         
         let statusIcon, statusText, actionBtn = '';
         
-        if (item.status === 'downloading') {
+        if (item.status === 'downloading' || item.status.includes('Downloading')) {
             statusIcon = '<i class="fas fa-spinner fa-spin text-blue-400"></i>';
-            statusText = `${item.progress}% ${item.speed ? '• ' + item.speed : ''}`;
+            statusText = item.status;
+        } else if (item.status === 'processing' || item.status === 'Processing...') {
+            statusIcon = '<i class="fas fa-cog fa-spin text-yellow-400"></i>';
+            statusText = 'Processing...';
         } else if (item.status === 'pending') {
             statusIcon = '<i class="fas fa-clock text-gray-400"></i>';
             statusText = 'Waiting...';
@@ -444,11 +471,6 @@ function renderQueueItems(queue) {
                 <div class="flex-1 min-w-0">
                     <div class="font-semibold truncate text-sm">${item.title || 'Unknown'}</div>
                     <div class="text-xs text-gray-400">${statusText}</div>
-                    ${item.status === 'downloading' ? `
-                        <div class="mt-2 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                            <div class="h-full bg-gradient-to-r from-cyan-500 to-pink-500 rounded-full transition-all" style="width: ${item.progress}%"></div>
-                        </div>
-                    ` : ''}
                 </div>
                 <div class="flex items-center gap-2">
                     ${actionBtn}
@@ -556,12 +578,39 @@ async function startQueue() {
     try {
         await fetch('/api/queue/start', { method: 'POST' });
         
-        // Start polling for updates
+        // Start polling for updates - more frequently when downloading
         if (queueRefreshInterval) clearInterval(queueRefreshInterval);
-        queueRefreshInterval = setInterval(loadQueue, 1000);
+        queueRefreshInterval = setInterval(loadQueue, 500);
         
     } catch (err) {
         showError('Failed to start queue');
+    }
+}
+
+async function clearAllQueue() {
+    if (!confirm('Are you sure you want to clear the entire queue? This will stop all active downloads.')) {
+        return;
+    }
+    
+    try {
+        await fetch('/api/queue/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'all' })
+        });
+        loadQueue();
+    } catch (err) {
+        console.error('Failed to clear queue:', err);
+    }
+}
+
+async function stopQueue() {
+    try {
+        await fetch('/api/queue/stop', { method: 'POST' });
+        if (queueRefreshInterval) clearInterval(queueRefreshInterval);
+        loadQueue();
+    } catch (err) {
+        console.error('Failed to stop queue:', err);
     }
 }
 
@@ -589,8 +638,9 @@ async function clearCompleted() {
 
 async function retryDownload(taskId) {
     try {
+        // Reset the item status to pending for retry
         await fetch(`/api/queue/${taskId}`, { method: 'DELETE' });
-        // TODO: Add retry logic
+        // Get the original item info from queue data and re-add
         loadQueue();
     } catch (err) {
         console.error('Failed to retry:', err);

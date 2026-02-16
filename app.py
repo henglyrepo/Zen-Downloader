@@ -6,6 +6,8 @@ import threading
 import re
 import sys
 import shutil
+import time
+import yt_dlp
 from flask import (
     Flask,
     render_template,
@@ -240,6 +242,57 @@ def get_video_info(url):
     return get_video_info_cli(url)
 
 
+def progress_hook(task_id):
+    def hook(d):
+        if task_id not in download_progress:
+            return
+        
+        status = d.get('status', '')
+        
+        if status == 'downloading':
+            total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+            downloaded_bytes = d.get('downloaded_bytes', 0)
+            
+            if total_bytes > 0:
+                percent = (downloaded_bytes / total_bytes) * 100
+                download_progress[task_id]['progress'] = int(percent)
+                download_progress[task_id]['status'] = f'Downloading ({int(percent)}%)'
+            else:
+                downloaded_mb = downloaded_bytes / (1024 * 1024)
+                download_progress[task_id]['status'] = f'Downloading ({downloaded_mb:.1f} MB)'
+                download_progress[task_id]['progress'] = 0
+            
+            speed = d.get('speed', 0)
+            if speed:
+                download_progress[task_id]['speed'] = format_speed(speed)
+        
+        elif status == 'finished':
+            download_progress[task_id]['status'] = 'Processing...'
+            download_progress[task_id]['progress'] = 100
+        
+        elif status == 'error':
+            download_progress[task_id]['status'] = 'Error'
+            download_progress[task_id]['error'] = d.get('error', 'Download error')
+    
+    return hook
+
+
+def format_bytes(bytes_val):
+    if bytes_val >= 1024 * 1024 * 1024:
+        return f"{bytes_val / (1024*1024*1024):.2f}G"
+    elif bytes_val >= 1024 * 1024:
+        return f"{bytes_val / (1024*1024):.2f}M"
+    elif bytes_val >= 1024:
+        return f"{bytes_val / 1024:.2f}K"
+    return f"{bytes_val}B"
+
+
+def format_speed(speed):
+    if speed:
+        return format_bytes(int(speed)) + "/s"
+    return ""
+
+
 def parse_progress(line, task_id):
     if task_id not in download_progress:
         return
@@ -294,154 +347,89 @@ def download_video(url, format_id, task_id, audio_only=False, download_path=None
             "status": "downloading",
             "progress": 0,
             "filename": None,
-            "speed": "0",
+            "speed": "",
         }
 
-        # Add FFmpeg to PATH for DLL loading
         ffmpeg_loc = get_ffmpeg_location()
         if ffmpeg_loc:
             os.environ["PATH"] = ffmpeg_loc + os.pathsep + os.environ.get("PATH", "")
 
-        # Get video title for filename
         video_title = task_id
         try:
-            info_cmd = [
-                YT_DLP_EXE,
-                "--dump-json",
-                "--no-download",
-                "--no-playlist",
-                "-q",
-                url,
-            ]
-            result = subprocess.run(
-                info_cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                encoding="utf-8",
-                errors="replace",
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                try:
-                    info = json.loads(result.stdout.strip())
-                    video_title = sanitize_filename(info.get("title", task_id))
-                except:
-                    pass
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info:
+                    video_title = sanitize_filename(info.get('title', task_id))
         except:
             pass
 
         output_path = os.path.join(download_path, video_title)
 
-        ffmpeg_arg = ["--ffmpeg-location", ffmpeg_loc] if ffmpeg_loc else []
+        ydl_opts = {
+            'progress_hooks': [progress_hook(task_id)],
+            'outtmpl': output_path + '.%(ext)s',
+            'noplaylist': True,
+            'nocheckcertificate': True,
+            'ffmpeg_location': ffmpeg_loc if ffmpeg_loc else None,
+        }
 
         if audio_only:
-            cmd = (
-                [
-                    YT_DLP_EXE,
-                    "--format",
-                    "bestaudio/best",
-                    "--output",
-                    output_path + ".%(ext)s",
-                    "--extract-audio",
-                    "--audio-format",
-                    "mp3",
-                    "--audio-quality",
-                    "0",
-                    "--no-playlist",
-                    "-q",
-                ]
-                + ffmpeg_arg
-                + [url]
-            )
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'extractaudio': True,
+                'audioformat': 'mp3',
+                'audioquality': '0',
+            })
         else:
             if format_id == "best":
                 fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
             else:
                 fmt = f"{format_id}+bestaudio[ext=m4a]/bestvideo[ext=webm]+bestaudio/best[ext=mp4]/best"
+            
+            ydl_opts.update({
+                'format': fmt,
+                'merge_output_format': 'mp4',
+            })
 
-            cmd = (
-                [
-                    YT_DLP_EXE,
-                    "--format",
-                    fmt,
-                    "--output",
-                    output_path + ".%(ext)s",
-                    "--merge-output-format",
-                    "mp4",
-                    "--no-playlist",
-                    "-q",
-                ]
-                + ffmpeg_arg
-                + [url]
-            )
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
 
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-        )
+            output_file = None
+            for ext in ['.mp3', '.mp4', '.mkv', '.webm', '.m4a']:
+                potential_file = output_path + ext
+                if os.path.exists(potential_file):
+                    output_file = potential_file
+                    break
 
-        stderr_stream = process.stderr
-
-        if stderr_stream:
-            stderr_lines = []
-            while True:
-                char = stderr_stream.read(1)
-                if not char:
-                    if process.poll() is not None:
-                        break
-                    continue
-
-                if char == "\r" or char == "\n":
-                    line = "".join(stderr_lines).strip()
-                    if line:
-                        parse_progress(line, task_id)
-                    stderr_lines = []
-                else:
-                    stderr_lines.append(char)
-
-        process.wait()
-
-        if process.returncode != 0:
-            stdout, stderr = process.communicate()
-            error_msg = stderr or "Download failed"
-            if "ERROR" in error_msg:
-                download_progress[task_id]["status"] = "error"
-                download_progress[task_id]["error"] = error_msg
+            if output_file and os.path.exists(output_file):
+                filename = os.path.basename(output_file)
+                download_progress[task_id]["status"] = "completed"
+                download_progress[task_id]["filename"] = filename
+                download_progress[task_id]["progress"] = 100
+                
+                with queue_lock:
+                    for item in download_queue:
+                        if item.get("task_id") == task_id:
+                            item["status"] = "completed"
+                            break
+                
+                threading.Thread(target=process_queue, daemon=True).start()
             else:
                 download_progress[task_id]["status"] = "error"
-                download_progress[task_id]["error"] = (
-                    f"Download failed with code {process.returncode}"
-                )
-            return
+                download_progress[task_id]["error"] = "Output file not found"
+                
+                with queue_lock:
+                    for item in download_queue:
+                        if item.get("task_id") == task_id:
+                            item["status"] = "error"
+                            break
+                
+                threading.Thread(target=process_queue, daemon=True).start()
 
-        output_file = None
-        for ext in [".mp3", ".mp4", ".mkv", ".webm", ".m4a"]:
-            potential_file = output_path + ext
-            if os.path.exists(potential_file):
-                output_file = potential_file
-                break
-
-        if output_file and os.path.exists(output_file):
-            filename = os.path.basename(output_file)
-            download_progress[task_id]["status"] = "completed"
-            download_progress[task_id]["filename"] = filename
-            download_progress[task_id]["progress"] = 100
-            
-            with queue_lock:
-                for item in download_queue:
-                    if item.get("task_id") == task_id:
-                        item["status"] = "completed"
-                        break
-            
-            threading.Thread(target=process_queue, daemon=True).start()
-        else:
+        except yt_dlp.utils.DownloadError as e:
             download_progress[task_id]["status"] = "error"
-            download_progress[task_id]["error"] = "Output file not found"
+            download_progress[task_id]["error"] = str(e)
             
             with queue_lock:
                 for item in download_queue:
@@ -451,21 +439,25 @@ def download_video(url, format_id, task_id, audio_only=False, download_path=None
             
             threading.Thread(target=process_queue, daemon=True).start()
 
-    except subprocess.TimeoutExpired:
-        download_progress[task_id]["status"] = "error"
-        download_progress[task_id]["error"] = "Download timed out"
-        
-        with queue_lock:
-            for item in download_queue:
-                if item.get("task_id") == task_id:
-                    item["status"] = "error"
-                    break
-        
-        threading.Thread(target=process_queue, daemon=True).start()
-        
+        except Exception as e:
+            download_progress[task_id]["status"] = "error"
+            download_progress[task_id]["error"] = str(e)
+            
+            with queue_lock:
+                for item in download_queue:
+                    if item.get("task_id") == task_id:
+                        item["status"] = "error"
+                        break
+            
+            threading.Thread(target=process_queue, daemon=True).start()
+
     except Exception as e:
-        download_progress[task_id]["status"] = "error"
-        download_progress[task_id]["error"] = str(e)
+        download_progress[task_id] = {
+            "status": "error",
+            "progress": 0,
+            "filename": None,
+            "error": str(e),
+        }
         
         with queue_lock:
             for item in download_queue:
@@ -535,7 +527,8 @@ def download_playlist(url, format_id, task_id, audio_only=False, download_path=N
                 "--audio-format", "mp3",
                 "--audio-quality", "0",
                 "--yes-playlist",
-                "-q",
+                "--no-warnings",
+                "--no-check-certificate",
             ] + ffmpeg_arg + [url]
         else:
             if format_id == "best":
@@ -549,7 +542,8 @@ def download_playlist(url, format_id, task_id, audio_only=False, download_path=N
                 "--output", output_template,
                 "--merge-output-format", "mp4",
                 "--yes-playlist",
-                "-q",
+                "--no-warnings",
+                "--no-check-certificate",
             ] + ffmpeg_arg + [url]
 
         process = subprocess.Popen(
@@ -597,28 +591,50 @@ def download_playlist(url, format_id, task_id, audio_only=False, download_path=N
 
 def process_queue():
     global processing_queue
+    
     with queue_lock:
         if processing_queue:
             return
         processing_queue = True
     
     while True:
+        items_to_process = []
+        
         with queue_lock:
             active_count = sum(1 for item in download_queue if item.get("status") == "downloading")
             available_slots = app_settings["concurrent_downloads"] - active_count
             
-            if available_slots <= 0:
-                break
-            
             pending_items = [item for item in download_queue if item.get("status") == "pending"]
-            if not pending_items:
-                break
             
-            items_to_process = pending_items[:available_slots]
+            if available_slots <= 0:
+                if active_count == 0:
+                    processing_queue = False
+                    break
+            elif not pending_items:
+                if active_count == 0:
+                    processing_queue = False
+                    break
+            
+            if available_slots > 0 and pending_items:
+                items_to_process = pending_items[:available_slots]
         
+        if not items_to_process:
+            time.sleep(0.5)
+            continue
+            
         for item in items_to_process:
-            item["status"] = "downloading"
-            item["started_at"] = str(uuid.uuid4())
+            with queue_lock:
+                item["status"] = "downloading"
+                item["started_at"] = str(uuid.uuid4())
+            
+            task_id = item["task_id"]
+            download_progress[task_id] = {
+                "status": "downloading",
+                "progress": 0,
+                "filename": None,
+                "speed": "",
+                "title": item.get("title", "Downloading"),
+            }
             
             thread = threading.Thread(
                 target=download_video,
@@ -631,11 +647,8 @@ def process_queue():
                 )
             )
             thread.start()
-    
-    with queue_lock:
-        active = sum(1 for item in download_queue if item.get("status") == "downloading")
-        if active == 0:
-            processing_queue = False
+        
+        time.sleep(0.5)
 
 
 @app.route("/")
@@ -918,25 +931,32 @@ def get_queue():
     for item in download_queue:
         task_id = item.get("task_id")
         progress = download_progress.get(task_id, {}) if task_id else {}
+        status = progress.get("status", item.get("status", "pending"))
         queue_data.append({
             "id": item.get("task_id"),
             "url": item.get("url"),
             "title": item.get("title", "Unknown"),
-            "status": item.get("status", "pending"),
+            "status": status,
             "progress": progress.get("progress", 0),
             "speed": progress.get("speed", ""),
             "filename": progress.get("filename", ""),
             "error": progress.get("error", ""),
             "added_at": item.get("added_at", ""),
         })
+    
+    total = len(queue_data)
+    completed = sum(1 for q in queue_data if q["status"] == "completed")
+    
     return jsonify({
         "queue": queue_data,
         "settings": app_settings,
-        "total": len(queue_data),
+        "total": total,
         "pending": sum(1 for q in queue_data if q["status"] == "pending"),
-        "downloading": sum(1 for q in queue_data if q["status"] == "downloading"),
-        "completed": sum(1 for q in queue_data if q["status"] == "completed"),
+        "downloading": sum(1 for q in queue_data if "downloading" in q["status"].lower() or q["status"] == "processing"),
+        "completed": completed,
         "failed": sum(1 for q in queue_data if q["status"] == "error"),
+        "queue_progress": f"{completed}/{total}",
+        "queue_percent": int((completed / total) * 100) if total > 0 else 0,
     })
 
 
@@ -1015,8 +1035,18 @@ def clear_queue():
             download_queue[:] = [item for item in download_queue if item.get("status") != "completed"]
         elif clear_type == "failed":
             download_queue[:] = [item for item in download_queue if item.get("status") != "error"]
+        elif clear_type == "pending":
+            download_queue[:] = [item for item in download_queue if item.get("status") == "pending"]
     
     return jsonify({"message": f"Cleared {clear_type} items from queue"})
+
+
+@app.route("/api/queue/stop", methods=["POST"])
+def stop_queue():
+    global processing_queue
+    with queue_lock:
+        processing_queue = False
+    return jsonify({"message": "Queue processing stopped"})
 
 
 if __name__ == "__main__":
