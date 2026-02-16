@@ -25,8 +25,30 @@ app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 os.makedirs(app.config["DOWNLOAD_FOLDER"], exist_ok=True)
 
 download_progress = {}
+download_queue = []
+discover_tasks = {}
+app_settings = {
+    "concurrent_downloads": 1,
+    "default_quality": "best",
+    "default_format": "mp4",
+}
 
 YT_DLP_EXE = "yt-dlp"
+queue_lock = threading.Lock()
+processing_queue = False
+
+
+def get_default_download_path():
+    if sys.platform == "win32":
+        return os.path.join(os.path.expanduser("~"), "Downloads")
+    elif sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Downloads")
+    else:
+        return os.path.join(os.path.expanduser("~"), "Downloads")
+
+
+def get_download_folder():
+    return app.config["DOWNLOAD_FOLDER"]
 
 
 def check_ffmpeg():
@@ -244,8 +266,20 @@ def parse_progress(line, task_id):
     if "Postprocessing" in line:
         download_progress[task_id]["status"] = "postprocessing"
 
+    playlist_match = re.search(r"\[download\]\s+(\d+)\s+of\s+(\d+)", line)
+    if playlist_match:
+        current = int(playlist_match.group(1))
+        total = int(playlist_match.group(2))
+        download_progress[task_id]["current_video"] = current
+        download_progress[task_id]["total_videos"] = total
 
-def download_video(url, format_id, task_id, audio_only=False):
+
+def download_video(url, format_id, task_id, audio_only=False, download_path=None):
+    if download_path is None:
+        download_path = app.config["DOWNLOAD_FOLDER"]
+    
+    os.makedirs(download_path, exist_ok=True)
+    
     if not check_ffmpeg():
         download_progress[task_id] = {
             "status": "error",
@@ -296,7 +330,7 @@ def download_video(url, format_id, task_id, audio_only=False):
         except:
             pass
 
-        output_path = os.path.join(app.config["DOWNLOAD_FOLDER"], video_title)
+        output_path = os.path.join(download_path, video_title)
 
         ffmpeg_arg = ["--ffmpeg-location", ffmpeg_loc] if ffmpeg_loc else []
 
@@ -397,16 +431,211 @@ def download_video(url, format_id, task_id, audio_only=False):
             download_progress[task_id]["status"] = "completed"
             download_progress[task_id]["filename"] = filename
             download_progress[task_id]["progress"] = 100
+            
+            with queue_lock:
+                for item in download_queue:
+                    if item.get("task_id") == task_id:
+                        item["status"] = "completed"
+                        break
+            
+            threading.Thread(target=process_queue, daemon=True).start()
         else:
             download_progress[task_id]["status"] = "error"
             download_progress[task_id]["error"] = "Output file not found"
+            
+            with queue_lock:
+                for item in download_queue:
+                    if item.get("task_id") == task_id:
+                        item["status"] = "error"
+                        break
+            
+            threading.Thread(target=process_queue, daemon=True).start()
 
     except subprocess.TimeoutExpired:
         download_progress[task_id]["status"] = "error"
         download_progress[task_id]["error"] = "Download timed out"
+        
+        with queue_lock:
+            for item in download_queue:
+                if item.get("task_id") == task_id:
+                    item["status"] = "error"
+                    break
+        
+        threading.Thread(target=process_queue, daemon=True).start()
+        
     except Exception as e:
         download_progress[task_id]["status"] = "error"
         download_progress[task_id]["error"] = str(e)
+        
+        with queue_lock:
+            for item in download_queue:
+                if item.get("task_id") == task_id:
+                    item["status"] = "error"
+                    break
+        
+        threading.Thread(target=process_queue, daemon=True).start()
+
+
+def download_playlist(url, format_id, task_id, audio_only=False, download_path=None, concurrent=3):
+    if download_path is None:
+        download_path = app.config["DOWNLOAD_FOLDER"]
+    
+    os.makedirs(download_path, exist_ok=True)
+
+    if not check_ffmpeg():
+        download_progress[task_id] = {
+            "status": "error",
+            "progress": 0,
+            "filename": None,
+            "error": "FFmpeg is not installed. Please install FFmpeg to process videos.",
+        }
+        return
+
+    try:
+        download_progress[task_id] = {
+            "status": "downloading",
+            "progress": 0,
+            "filename": None,
+            "speed": "0",
+            "current_video": 0,
+            "total_videos": 0,
+        }
+
+        ffmpeg_loc = get_ffmpeg_location()
+        if ffmpeg_loc:
+            os.environ["PATH"] = ffmpeg_loc + os.pathsep + os.environ.get("PATH", "")
+
+        playlist_title = "playlist"
+        try:
+            info_cmd = [YT_DLP_EXE, "--dump-json", "--no-download", "--flat-playlist", "-q", url]
+            result = subprocess.run(info_cmd, capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
+            if result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split("\n")
+                count = sum(1 for line in lines if line.strip())
+                download_progress[task_id]["total_videos"] = count
+                if count > 0:
+                    try:
+                        first = json.loads(lines[0])
+                        playlist_title = sanitize_filename(first.get("playlist_title", "playlist"))
+                    except:
+                        pass
+        except:
+            pass
+
+        output_template = os.path.join(download_path, playlist_title, "%(title)s.%(ext)s")
+        
+        ffmpeg_arg = ["--ffmpeg-location", ffmpeg_loc] if ffmpeg_loc else []
+
+        if audio_only:
+            cmd = [
+                YT_DLP_EXE,
+                "--format", "bestaudio/best",
+                "--output", output_template,
+                "--extract-audio",
+                "--audio-format", "mp3",
+                "--audio-quality", "0",
+                "--yes-playlist",
+                "-q",
+            ] + ffmpeg_arg + [url]
+        else:
+            if format_id == "best":
+                fmt = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+            else:
+                fmt = f"{format_id}+bestaudio[ext=m4a]/bestvideo[ext=webm]+bestaudio/best[ext=mp4]/best"
+
+            cmd = [
+                YT_DLP_EXE,
+                "--format", fmt,
+                "--output", output_template,
+                "--merge-output-format", "mp4",
+                "--yes-playlist",
+                "-q",
+            ] + ffmpeg_arg + [url]
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        stderr_stream = process.stderr
+        if stderr_stream:
+            stderr_lines = []
+            while True:
+                char = stderr_stream.read(1)
+                if not char:
+                    if process.poll() is not None:
+                        break
+                    continue
+                if char == "\r" or char == "\n":
+                    line = "".join(stderr_lines).strip()
+                    if line:
+                        parse_progress(line, task_id)
+                    stderr_lines = []
+                else:
+                    stderr_lines.append(char)
+
+        process.wait()
+
+        if process.returncode != 0:
+            download_progress[task_id]["status"] = "error"
+            download_progress[task_id]["error"] = f"Playlist download failed with code {process.returncode}"
+            return
+
+        download_progress[task_id]["status"] = "completed"
+        download_progress[task_id]["progress"] = 100
+        download_progress[task_id]["filename"] = f"Playlist: {playlist_title}"
+
+    except Exception as e:
+        download_progress[task_id]["status"] = "error"
+        download_progress[task_id]["error"] = str(e)
+
+
+def process_queue():
+    global processing_queue
+    with queue_lock:
+        if processing_queue:
+            return
+        processing_queue = True
+    
+    while True:
+        with queue_lock:
+            active_count = sum(1 for item in download_queue if item.get("status") == "downloading")
+            available_slots = app_settings["concurrent_downloads"] - active_count
+            
+            if available_slots <= 0:
+                break
+            
+            pending_items = [item for item in download_queue if item.get("status") == "pending"]
+            if not pending_items:
+                break
+            
+            items_to_process = pending_items[:available_slots]
+        
+        for item in items_to_process:
+            item["status"] = "downloading"
+            item["started_at"] = str(uuid.uuid4())
+            
+            thread = threading.Thread(
+                target=download_video,
+                args=(
+                    item["url"],
+                    item["format_id"],
+                    item["task_id"],
+                    item.get("audio_only", False),
+                    item.get("download_path", app.config["DOWNLOAD_FOLDER"])
+                )
+            )
+            thread.start()
+    
+    with queue_lock:
+        active = sum(1 for item in download_queue if item.get("status") == "downloading")
+        if active == 0:
+            processing_queue = False
 
 
 @app.route("/")
@@ -435,6 +664,135 @@ def get_info():
     return jsonify(info)
 
 
+@app.route("/api/discover", methods=["POST"])
+def start_discover():
+    if not check_ytdlp():
+        return jsonify(
+            {"error": "yt-dlp is not installed. Please run: pip install yt-dlp"}
+        ), 400
+
+    data = request.get_json()
+    url = data.get("url", "").strip()
+    max_videos = data.get("max_videos", 50)
+
+    if not url:
+        return jsonify({"error": "Please enter a URL"}), 400
+
+    task_id = str(uuid.uuid4())
+    
+    # Store discover task
+    discover_tasks[task_id] = {
+        "url": url,
+        "max_videos": max_videos,
+        "videos": [],
+        "status": "running"
+    }
+
+    # Start discovery in background thread
+    thread = threading.Thread(
+        target=discover_videos,
+        args=(url, max_videos, task_id)
+    )
+    thread.start()
+
+    return jsonify({"task_id": task_id, "message": "Discovery started"})
+
+
+def discover_videos(url, max_videos, task_id):
+    try:
+        ffmpeg_loc = get_ffmpeg_location()
+        ffmpeg_arg = ["--ffmpeg-location", ffmpeg_loc] if ffmpeg_loc else []
+
+        cmd = [
+            YT_DLP_EXE,
+            "--dump-json",
+            "--yes-playlist",
+            "--playlist-end", str(max_videos),
+            "-q",
+        ] + ffmpeg_arg + [url]
+
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        for line in iter(process.stdout.readline, ''):
+            if not line:
+                break
+            
+            if task_id not in discover_tasks:
+                process.terminate()
+                break
+            
+            try:
+                entry = json.loads(line.strip())
+                video_info = {
+                    "id": entry.get("id"),
+                    "title": entry.get("title"),
+                    "thumbnail": entry.get("thumbnail"),
+                    "duration": format_duration(entry.get("duration")),
+                    "url": f"https://www.youtube.com/watch?v={entry.get('id')}",
+                }
+                
+                with queue_lock:
+                    if task_id in discover_tasks:
+                        discover_tasks[task_id]["videos"].append(video_info)
+                        
+            except:
+                continue
+
+        process.wait()
+        
+        with queue_lock:
+            if task_id in discover_tasks:
+                discover_tasks[task_id]["status"] = "completed"
+
+    except Exception as e:
+        with queue_lock:
+            if task_id in discover_tasks:
+                discover_tasks[task_id]["status"] = "error"
+                discover_tasks[task_id]["error"] = str(e)
+
+
+@app.route("/api/discover/<task_id>")
+def stream_discover(task_id):
+    def generate():
+        checked_indices = set()
+        while True:
+            with queue_lock:
+                if task_id not in discover_tasks:
+                    yield f"data: {json.dumps({'status': 'error', 'error': 'Task not found'})}\n\n"
+                    break
+                
+                task = discover_tasks[task_id]
+                videos = task.get("videos", [])
+                status = task.get("status", "running")
+                
+                # Send new videos
+                for i, video in enumerate(videos):
+                    if i not in checked_indices:
+                        checked_indices.add(i)
+                        yield f"data: {json.dumps({'type': 'video', 'video': video, 'count': len(videos), 'status': status})}\n\n"
+                
+                if status == "completed":
+                    yield f"data: {json.dumps({'status': 'completed', 'count': len(videos)})}\n\n"
+                    break
+                
+                if status == "error":
+                    yield f"data: {json.dumps({'status': 'error', 'error': task.get('error', 'Unknown error')})}\n\n"
+                    break
+
+            import time
+            time.sleep(0.5)
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+
+
 @app.route("/api/download", methods=["POST"])
 def start_download():
     if not check_ytdlp():
@@ -446,15 +804,24 @@ def start_download():
     url = data.get("url", "").strip()
     format_id = data.get("format_id", "best")
     audio_only = data.get("audio_only", False)
+    download_path = data.get("download_path", app.config["DOWNLOAD_FOLDER"])
+    playlist_mode = data.get("playlist_mode", False)
 
     if not url:
         return jsonify({"error": "Please enter a URL"}), 400
 
     task_id = str(uuid.uuid4())
 
-    thread = threading.Thread(
-        target=download_video, args=(url, format_id, task_id, audio_only)
-    )
+    if playlist_mode or "playlist" in url.lower() or "list=" in url.lower() or "/channel/" in url.lower() or "/@" in url.lower():
+        thread = threading.Thread(
+            target=download_playlist, 
+            args=(url, format_id, task_id, audio_only, download_path)
+        )
+    else:
+        thread = threading.Thread(
+            target=download_video, 
+            args=(url, format_id, task_id, audio_only, download_path)
+        )
     thread.start()
 
     return jsonify({"task_id": task_id, "message": "Download started"})
@@ -525,6 +892,133 @@ def check_tools():
     )
 
 
+@app.route("/api/settings", methods=["GET"])
+def get_settings():
+    return jsonify({
+        "download_path": get_default_download_path(),
+        "app_download_path": app.config["DOWNLOAD_FOLDER"],
+        "concurrent_downloads": app_settings["concurrent_downloads"],
+        "default_quality": app_settings["default_quality"],
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+def update_settings():
+    data = request.get_json()
+    if "concurrent_downloads" in data:
+        app_settings["concurrent_downloads"] = max(1, min(5, int(data["concurrent_downloads"])))
+    if "default_quality" in data:
+        app_settings["default_quality"] = data["default_quality"]
+    return jsonify({"message": "Settings updated", "settings": app_settings})
+
+
+@app.route("/api/queue", methods=["GET"])
+def get_queue():
+    queue_data = []
+    for item in download_queue:
+        task_id = item.get("task_id")
+        progress = download_progress.get(task_id, {}) if task_id else {}
+        queue_data.append({
+            "id": item.get("task_id"),
+            "url": item.get("url"),
+            "title": item.get("title", "Unknown"),
+            "status": item.get("status", "pending"),
+            "progress": progress.get("progress", 0),
+            "speed": progress.get("speed", ""),
+            "filename": progress.get("filename", ""),
+            "error": progress.get("error", ""),
+            "added_at": item.get("added_at", ""),
+        })
+    return jsonify({
+        "queue": queue_data,
+        "settings": app_settings,
+        "total": len(queue_data),
+        "pending": sum(1 for q in queue_data if q["status"] == "pending"),
+        "downloading": sum(1 for q in queue_data if q["status"] == "downloading"),
+        "completed": sum(1 for q in queue_data if q["status"] == "completed"),
+        "failed": sum(1 for q in queue_data if q["status"] == "error"),
+    })
+
+
+@app.route("/api/queue", methods=["POST"])
+def add_to_queue():
+    data = request.get_json()
+    url = data.get("url", "").strip()
+    format_id = data.get("format_id", "best")
+    audio_only = data.get("audio_only", False)
+    download_path = data.get("download_path", app.config["DOWNLOAD_FOLDER"])
+    title = data.get("title", "Video")
+    
+    if not url:
+        return jsonify({"error": "Please enter a URL"}), 400
+    
+    task_id = str(uuid.uuid4())
+    
+    queue_item = {
+        "task_id": task_id,
+        "url": url,
+        "format_id": format_id,
+        "audio_only": audio_only,
+        "download_path": download_path,
+        "title": title,
+        "status": "pending",
+        "added_at": str(uuid.uuid4()),
+    }
+    
+    with queue_lock:
+        download_queue.append(queue_item)
+        download_progress[task_id] = {
+            "status": "pending",
+            "progress": 0,
+            "filename": None,
+            "speed": "",
+            "title": title,
+        }
+    
+    return jsonify({
+        "task_id": task_id,
+        "message": "Added to queue",
+        "queue_position": len(download_queue)
+    })
+
+
+@app.route("/api/queue/start", methods=["POST"])
+def start_queue():
+    threading.Thread(target=process_queue, daemon=True).start()
+    return jsonify({"message": "Queue processing started"})
+
+
+@app.route("/api/queue/<task_id>", methods=["DELETE"])
+def remove_from_queue(task_id):
+    with queue_lock:
+        for i, item in enumerate(download_queue):
+            if item.get("task_id") == task_id:
+                if item.get("status") == "downloading":
+                    return jsonify({"error": "Cannot remove downloading item"}), 400
+                download_queue.pop(i)
+                if task_id in download_progress:
+                    del download_progress[task_id]
+                return jsonify({"message": "Removed from queue"})
+    return jsonify({"error": "Item not found"}), 404
+
+
+@app.route("/api/queue/clear", methods=["POST"])
+def clear_queue():
+    data = request.get_json()
+    clear_type = data.get("type", "completed")
+    
+    with queue_lock:
+        if clear_type == "all":
+            download_queue.clear()
+            download_progress.clear()
+        elif clear_type == "completed":
+            download_queue[:] = [item for item in download_queue if item.get("status") != "completed"]
+        elif clear_type == "failed":
+            download_queue[:] = [item for item in download_queue if item.get("status") != "error"]
+    
+    return jsonify({"message": f"Cleared {clear_type} items from queue"})
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("  Zen Downloader - Starting Server")
@@ -550,3 +1044,4 @@ if __name__ == "__main__":
     print("=" * 50)
 
     app.run(debug=True, host="0.0.0.0", port=5000)
+  

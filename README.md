@@ -39,6 +39,9 @@
 | 🎬 **Up to 4K Quality** | Download videos in the highest available resolution |
 | 🎵 **MP3 Extraction** | Convert videos to high-quality audio |
 | 📺 **Playlist Support** | Download entire channels or playlists at once |
+| 📋 **Download Queue** | Queue multiple downloads and manage in one place |
+| 🔍 **Video Discovery** | Discover channel videos before downloading |
+| 📂 **Custom Path** | Save files to any folder you choose |
 | 🔄 **Auto Updates** | yt-dlp updates automatically |
 | 🌐 **Cross-Platform** | Works on Windows, macOS, and Linux |
 
@@ -51,6 +54,10 @@
 - ✅ **Audio Extraction** - Extract audio as high-quality MP3
 - ✅ **Quality Selection** - Choose from 144p to 4K resolution
 - ✅ **Real-time Progress** - Live download progress with speed indicator
+- ✅ **Download Queue** - Queue multiple downloads and manage them in one place
+- ✅ **Channel/Playlist Discovery** - Discover videos progressively before downloading
+- ✅ **Custom Download Path** - Choose where to save your files
+- ✅ **Concurrent Downloads** - Download multiple videos simultaneously (1-5)
 - ✅ **Modern UI** - Sleek, responsive dark theme interface
 - ✅ **Auto Tool Check** - Automatically detects if FFmpeg and yt-dlp are installed
 - ✅ **One-Click Run** - Just double-click `run.bat` to start
@@ -75,6 +82,27 @@ Zen Downloader supports **1700+ websites** including:
 | 📌 Pinterest | pinterest.com |
 
 Plus 1700+ more! [View full list](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)
+
+---
+
+## Download Queue
+
+Zen Downloader features a powerful queue system for managing multiple downloads:
+
+- 📋 **Queue Panel** - View all pending, downloading, and completed downloads
+- ⚙️ **Concurrent Downloads** - Download up to 5 videos simultaneously
+- 🎛️ **Queue Controls** - Start queue, clear completed, remove individual items
+- 📊 **Real-time Progress** - See live progress for each download
+- 🔄 **Auto-retry** - Failed downloads can be retried easily
+
+### Progressive Video Discovery
+
+For channels and playlists, use the **Discover** feature to:
+
+- 🔍 **Find Videos** - Discover videos progressively as they're found
+- 📝 **Select Videos** - Choose which videos to download with checkboxes
+- 🎯 **Set Limits** - Limit how many videos to discover (1-500)
+- ⏩ **Real-time List** - Videos appear in the list as they're discovered
 
 ---
 
@@ -116,18 +144,33 @@ Open [http://localhost:5000](http://localhost:5000) in your browser.
 
 ## Usage Guide
 
+### For Single Videos
+
 1. **Open the app** - Browser opens to http://localhost:5000
-2. **Paste URL** - Paste any supported video or playlist URL
-3. **Select Quality** - Choose your preferred resolution (144p to 4K)
-4. **Download** - Click "Download Now" - file downloads automatically!
+2. **Paste URL** - Paste any supported video URL
+3. **Get Info** - Click to fetch video details
+4. **Select Quality** - Choose your preferred resolution (144p to 4K)
+5. **Add to Queue** - Click "Add to Queue" to add to download queue
+6. **Start** - Go to Queue panel and click "Start"
+
+### For Playlists & Channels
+
+1. **Paste URL** - Paste playlist or channel URL
+2. **Discover** - Click "Discover Videos" to find all videos
+3. **Select Videos** - Check the videos you want to download
+4. **Configure** - Set quality and MP3 options
+5. **Add to Queue** - Click "Add Selected to Queue"
+6. **Start** - Go to Queue panel and click "Start"
 
 ### Download Options
 
 | Option | Description |
 |--------|-------------|
-| **Video Quality** | Select from available resolutions |
+| **Video Quality** | Select from available resolutions or "Best Quality" |
 | **MP3 Mode** | Check "Download as MP3" to extract audio only |
-| **Best Quality** | Select "best" for highest available quality |
+| **Download Path** | Choose where to save your files |
+| **Max Videos** | Limit how many videos to discover (for playlists) |
+| **Concurrent Downloads** | Download multiple videos at once (1-5) |
 
 ---
 
